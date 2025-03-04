@@ -32,66 +32,53 @@ def parse_size(size_str):
         return float(value) * units.get(unit, 1)
     return 0
 
-def upload_to_ceph(filepath, source_dir, bucket_name, endpoint_url, uploaded_files):
+def upload_to_ceph(filepath, source_dir, bucket_name, endpoint_url):
     """
-    将本地文件上传到 Ceph 存储，并显示进度条。
+    将本地文件上传到 Ceph 存储，并显示上传进度条。
     
-    参数:
+    参数：
         filepath (str): 本地文件路径
-        source_dir (str): 源目录（例如 'D:\\'）
-        bucket_name (str): Ceph 存储桶名称（例如 'rfi_data'）
+        source_dir (str): 源目录（D:\）
+        bucket_name (str): Ceph 桶名称（rfi_data）
         endpoint_url (str): Ceph 端点 URL
-        uploaded_files (set): 已上传文件路径的集合
     """
-    # 如果文件已上传，则跳过
-    if filepath in uploaded_files:
-        print(f"{filepath} 已上传，跳过")
-        return
-
-    # 计算相对路径并转换为 S3 key（使用 / 分隔符）
+    # 计算文件相对于源目录的路径，并转换为 S3 的键（使用 / 分隔符）
     relative_path = os.path.relpath(filepath, source_dir)
     key = relative_path.replace('\\', '/')
-
-    # 构建上传命令，确保文件路径带引号以处理空格
+    
+    # 构造上传命令，双引号处理路径中的空格
     upload_command = f'aws s3 cp "{filepath}" s3://{bucket_name}/{key} --endpoint-url={endpoint_url}'
-
+    
     # 打印上传开始信息
     print(f"开始上传 {filepath} 到 s3://{bucket_name}/{key}")
-
-    # 执行命令并捕获输出
+    
+    # 使用 subprocess.Popen 执行命令，捕获输出
     process = subprocess.Popen(upload_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
+    
     # 获取文件大小并创建进度条
     file_size = os.path.getsize(filepath)
     pbar = tqdm(total=file_size, unit='B', unit_scale=True, desc=os.path.basename(filepath))
-
-    # 读取 stdout 以更新进度
+    
+    # 实时读取 stdout 并解析进度
     for line in iter(process.stdout.readline, b''):
         line = line.decode().strip()
         match = re.search(r'Completed (\d+\.?\d*\s*\w+)/(\d+\.?\d*\s*\w+)', line)
         if match:
             uploaded_str, total_str = match.groups()
             uploaded = parse_size(uploaded_str)
-            # 更新进度条，确保不超过文件大小
+            # 更新进度条，防止超出文件大小
             pbar.update(min(uploaded - pbar.n, file_size - pbar.n))
-
+    
     # 关闭 stdout 并等待命令完成
     process.stdout.close()
     process.wait()
     pbar.close()
-
+    
     # 检查上传结果
     if process.returncode == 0:
         print(f"成功上传 {os.path.basename(filepath)}")
-        # 添加到已上传文件集合并记录
-        uploaded_files.add(filepath)
-        with open("uploaded_files.txt", "a", encoding="utf-8") as f:
-            f.write(filepath + "\n")
     else:
-        print(f"上传 {os.path.basename(filepath)} 失败，返回码: {process.returncode}")
-        # 记录失败的上传
-        with open("failed_files.txt", "a", encoding="utf-8") as f:
-            f.write(filepath + "\n")
+        print(f"上传失败 {os.path.basename(filepath)}，返回码：{process.returncode}")
 
 if __name__ == "__main__":
     # 配置参数
