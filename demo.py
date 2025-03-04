@@ -5,14 +5,19 @@ import subprocess
 import re
 from tqdm import tqdm
 
+import os
+import subprocess
+import re
+from tqdm import tqdm
+
 def parse_size(size_str):
     """
-    Convert a size string with units (e.g., '256.0 KiB') to bytes.
-
-    Args:
-        size_str (str): Size string with units
-    Returns:
-        float: Size in bytes
+    将带单位的字符串（例如 '256.0 KiB'）转换为字节数。
+    
+    参数:
+        size_str (str): 带单位的字符串
+    返回:
+        float: 字节数
     """
     units = {
         'B': 1,
@@ -29,89 +34,100 @@ def parse_size(size_str):
 
 def upload_to_ceph(filepath, source_dir, bucket_name, endpoint_url, uploaded_files):
     """
-    Upload a local file to Ceph storage with a progress bar.
-
-    Args:
-        filepath (str): Path to the local file
-        source_dir (str): Source directory (e.g., 'D:\\')
-        bucket_name (str): Ceph bucket name (e.g., 'rfi_data')
-        endpoint_url (str): Ceph endpoint URL
-        uploaded_files (set): Set of already uploaded file paths
+    将本地文件上传到 Ceph 存储，并显示进度条。
+    
+    参数:
+        filepath (str): 本地文件路径
+        source_dir (str): 源目录（例如 'D:\\'）
+        bucket_name (str): Ceph 存储桶名称（例如 'rfi_data'）
+        endpoint_url (str): Ceph 端点 URL
+        uploaded_files (set): 已上传文件路径的集合
     """
-    # Skip if the file has already been uploaded
+    # 如果文件已上传，则跳过
     if filepath in uploaded_files:
-        print(f"{filepath} has already been uploaded, skipping")
+        print(f"{filepath} 已上传，跳过")
         return
 
-    # Calculate the relative path and convert to S3 key (using / separator)
+    # 计算相对路径并转换为 S3 key（使用 / 分隔符）
     relative_path = os.path.relpath(filepath, source_dir)
     key = relative_path.replace('\\', '/')
 
-    # Construct the upload command, quoting the filepath to handle spaces
+    # 构建上传命令，确保文件路径带引号以处理空格
     upload_command = f'aws s3 cp "{filepath}" s3://{bucket_name}/{key} --endpoint-url={endpoint_url}'
 
-    # Print upload start information
-    print(f"Starting upload of {filepath} to s3://{bucket_name}/{key}")
+    # 打印上传开始信息
+    print(f"开始上传 {filepath} 到 s3://{bucket_name}/{key}")
 
-    # Execute the command and capture output
+    # 执行命令并捕获输出
     process = subprocess.Popen(upload_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    # Get file size and create a progress bar
+    # 获取文件大小并创建进度条
     file_size = os.path.getsize(filepath)
     pbar = tqdm(total=file_size, unit='B', unit_scale=True, desc=os.path.basename(filepath))
 
-    # Read stdout to update progress
+    # 读取 stdout 以更新进度
     for line in iter(process.stdout.readline, b''):
         line = line.decode().strip()
         match = re.search(r'Completed (\d+\.?\d*\s*\w+)/(\d+\.?\d*\s*\w+)', line)
         if match:
             uploaded_str, total_str = match.groups()
             uploaded = parse_size(uploaded_str)
-            # Update progress bar, ensuring it doesn’t exceed file size
+            # 更新进度条，确保不超过文件大小
             pbar.update(min(uploaded - pbar.n, file_size - pbar.n))
 
-    # Close stdout and wait for the command to complete
+    # 关闭 stdout 并等待命令完成
     process.stdout.close()
     process.wait()
     pbar.close()
 
-    # Check upload result
+    # 检查上传结果
     if process.returncode == 0:
-        print(f"Successfully uploaded {os.path.basename(filepath)}")
-        # Record the successful upload
+        print(f"成功上传 {os.path.basename(filepath)}")
+        # 添加到已上传文件集合并记录
+        uploaded_files.add(filepath)
         with open("uploaded_files.txt", "a", encoding="utf-8") as f:
             f.write(filepath + "\n")
     else:
-        print(f"Upload failed for {os.path.basename(filepath)}, return code: {process.returncode}")
-        # Record the failed upload
+        print(f"上传 {os.path.basename(filepath)} 失败，返回码: {process.returncode}")
+        # 记录失败的上传
         with open("failed_files.txt", "a", encoding="utf-8") as f:
             f.write(filepath + "\n")
 
 if __name__ == "__main__":
-    # Configuration parameters
-    source_dir = 'D:\\'  # Source directory (mobile drive root)
-    bucket_name = 'rfi_data'  # Ceph bucket name
-    endpoint_url = 'http://10.140.31.252'  # Ceph endpoint URL
-    target_file = "A.fits"  # The file to start uploading from
+    # 配置参数
+    source_dir = 'D:\\'  # 源目录（移动驱动器根目录）
+    bucket_name = 'rfi'  # Ceph 存储桶名称
+    endpoint_url = 'http://10.140.27.254:80'  # Ceph 端点 URL
+    target_file = "A.fits"  # 开始上传的目标文件
 
-    # Load the list of already uploaded files
+    # 加载已上传文件集合
     if os.path.exists("uploaded_files.txt"):
         with open("uploaded_files.txt", "r", encoding="utf-8") as f:
             uploaded_files = set(line.strip() for line in f)
     else:
         uploaded_files = set()
 
-    # Flag to start uploading once the target file is found
-    start_upload = False
+    # 初始化用于收集 .fit 文件的列表
+    fit_files = []
+    start_collecting = False
 
-    # Traverse the D drive to find and upload .fit files
+    # 遍历目录，找到 target_file 并收集其及后续的 .fit 文件
     for root, dirs, files in os.walk(source_dir):
         for file in files:
             if file.endswith('.fit'):
                 filepath = os.path.join(root, file)
-                # Check if this is the target file "A.fits"
-                if not start_upload and os.path.basename(filepath) == target_file:
-                    start_upload = True
-                # Upload if we’ve reached or passed the target file
-                if start_upload:
-                    upload_to_ceph(filepath, source_dir, bucket_name, endpoint_url, uploaded_files)
+                # 检查是否为目标文件 "A.fits"
+                if not start_collecting and file == target_file:
+                    start_collecting = True
+                # 一旦找到目标文件，开始收集文件
+                if start_collecting:
+                    fit_files.append(filepath)
+
+    # 如果没有收集到文件，打印提示信息
+    if not fit_files:
+        print(f"在 {source_dir} 中未找到目标文件 {target_file}，没有文件需要上传。")
+    else:
+        # 遍历 fit_files 并上传文件，显示整体进度
+        for filepath in tqdm(fit_files, desc="上传 .fit 文件"):
+            if filepath not in uploaded_files:
+                upload_to_ceph(filepath, source_dir, bucket_name, endpoint_url, uploaded_files)
